@@ -1,0 +1,190 @@
+---
+title: "Analysis of NOAA Storm Events, 2024"
+author: "Julia Hise"
+date: "2025-12-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Synopsis
+
+This report analyzes NOAA StormEvents data for 2024 to identify the most harmful event types, their geographic distribution, seasonal patterns, and the deadliest hazards. The goal is to provide insights for municipal managers preparing for severe weather. The analysis shows that thunderstorm winds and hail are frequent, floods and flash floods are deadly, and winter weather dominates cold months. These findings highlight the importance of aligning preparedness strategies with seasonal and regional risks.
+
+# Data Processing
+
+We begin by loading the raw CSV files (`details`, `fatalities`, and `locations`) and joining them by `EVENT_ID`. We also clean property and crop damage variables to convert suffixes (K, M, B) into numeric values.
+
+```{r}
+# Clear space
+rm(list=ls())
+
+### Set working directory and define folder path ###
+setwd("C:/Users/Julia/OneDrive/Desktop/DAT 511/Final")
+folder_path <- "C:/Users/Julia/OneDrive/Desktop/DAT 511/Final"
+
+### Load required libraries ###
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(readr)
+  library(ggplot2)
+})
+
+# Define file paths
+details_file <- "StormEvents_details-ftp_v1.0_d2024_c20251118.csv"
+fatalities_file <- "StormEvents_fatalities-ftp_v1.0_d2024_c20251118.csv"
+locations_file <- "StormEvents_locations-ftp_v1.0_d2024_c20251118.csv"
+
+# Read CSVs into R
+details <- read_csv(details_file, show_col_types = FALSE)
+fatalities <- read_csv(fatalities_file, show_col_types = FALSE)
+locations <- read_csv(locations_file, show_col_types = FALSE)
+
+# Join datasets together by EVENT_ID
+joined_data <- details %>%
+  left_join(locations, by = "EVENT_ID", relationship = "many-to-many") %>%
+  left_join(fatalities, by = "EVENT_ID", relationship = "many-to-many")
+
+### Save the Joined Data to new csv file ###
+output_file <- file.path(folder_path, "StormEvents_joined_data.csv")
+write_csv(joined_data, output_file)
+```
+
+We must also clean Damage Variables. This is because NOAA often stores property/crop damage with suffixes like K 
+(thousands), M (millions), B (billions), and we want to convert them to numeric:
+```{r}
+clean_damage <- function(x) {
+  x <- toupper(x)
+  ifelse(grepl("K", x), as.numeric(sub("K", "", x)) * 1e3,
+         ifelse(grepl("M", x), as.numeric(sub("M", "", x)) * 1e6,
+                ifelse(grepl("B", x), as.numeric(sub("B", "", x)) * 1e9,
+                       as.numeric(x))))
+}
+
+# Apply cleaning function to property and crop damage columns
+joined_data$PROP_DAMAGE <- suppressWarnings(clean_damage(joined_data$DAMAGE_PROPERTY))
+joined_data$CROP_DAMAGE <- suppressWarnings(clean_damage(joined_data$DAMAGE_CROPS))
+
+# View summary statistics for cleaned damage columns
+summary(joined_data$PROP_DAMAGE)
+summary(joined_data$CROP_DAMAGE)
+```
+
+
+
+
+# Results
+
+
+# Question 1: Most harmful events to population health
+```{r}
+health_summary <- joined_data %>%
+  group_by(EVENT_TYPE) %>%
+  summarise(
+    total_fatalities = sum(DEATHS_DIRECT, na.rm = TRUE) + sum(DEATHS_INDIRECT, na.rm = TRUE),
+    total_injuries   = sum(INJURIES_DIRECT, na.rm = TRUE) + sum(INJURIES_INDIRECT, na.rm = TRUE)
+  ) %>%
+  mutate(total_health = total_fatalities + total_injuries) %>%
+  arrange(desc(total_health))
+
+top10_health <- head(health_summary, 10)
+
+ggplot(top10_health, aes(x = reorder(EVENT_TYPE, total_health), y = total_health)) +
+  geom_col(fill = "firebrick") +
+  coord_flip() +
+  labs(title = "Top 10 Most Harmful Event Types (2024)",
+       x = "Event Type",
+       y = "Fatalities + Injuries")
+```
+
+# Interpretation: 
+
+The analysis shows that tornadoes, floods, and excessive heat were among the most harmful events to population health in 2024, combining high fatalities and injuries. Tornadoes, while relatively localized, caused widespread injuries due to their destructive winds and debris. Floods and flash floods, on the other hand, were particularly deadly because of their sudden onset and the difficulty of evacuating affected areas in time. Excessive heat events highlight the growing impact of climate-related health emergencies, disproportionately affecting vulnerable populations such as the elderly, children, and outdoor workers. These findings emphasize that the most harmful hazards are not always the most frequent, and they require strong emergency response systems, public health preparedness, and targeted outreach to at-risk communities.
+
+
+
+# Question 2: Which events happen most in which states?
+```{r}
+q2_summary <- joined_data %>%
+  group_by(STATE, EVENT_TYPE) %>%
+  summarise(event_count = n(), .groups = "drop") %>%
+  arrange(desc(event_count))
+
+top10_combos <- head(q2_summary, 10)
+
+ggplot(top10_combos, aes(x = reorder(paste(EVENT_TYPE, STATE, sep = " - "), event_count), y = event_count)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 10 Event-Type/State Combinations (2024)",
+       x = "Event Type - State",
+       y = "Number of Events")
+
+```
+
+# Interpretation: 
+
+The bar chart reveals that Hail in Texas was the most frequent event-type/state combination in 2024, followed closely by Flash Floods in Texas and Floods in California. This pattern reflects Texas’s vulnerability to both convective storms and flash flooding, likely driven by its size, varied terrain, and active spring/summer storm seasons. California’s high flood count may be linked to winter rainfall and runoff events, especially in mountainous and coastal regions.
+
+The remaining combinations are dominated by Thunderstorm Wind events across a diverse set of states — from Kansas and Georgia to New York and Pennsylvania. This suggests that while hail and flash floods are more regionally concentrated, thunderstorm winds are widespread and affect both inland and coastal states. The geographic spread of these events highlights the need for state-specific preparedness strategies, especially in areas with repeated exposure to high-impact weather.
+
+
+
+# Question 3: Which events are characterized by which months?
+```{r}
+filtered_data <- joined_data %>%
+  filter(!is.na(BEGIN_DATE_TIME)) %>%
+  mutate(BEGIN_DATE_TIME = as.POSIXct(BEGIN_DATE_TIME, format = "%d-%b-%y %H:%M:%S", tz = "UTC")) %>%
+  mutate(MONTH = factor(format(BEGIN_DATE_TIME, "%b"),
+                        levels = month.abb,
+                        ordered = TRUE))
+
+monthly_counts <- filtered_data %>%
+  group_by(MONTH, EVENT_TYPE) %>%
+  summarise(event_count = n(), .groups = "drop")
+
+top_monthly_events <- monthly_counts %>%
+  group_by(MONTH) %>%
+  slice_max(order_by = event_count, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+ggplot(top_monthly_events, aes(x = MONTH, y = event_count, fill = EVENT_TYPE)) +
+  geom_col() +
+  labs(title = "Most Frequent Event Type by Month (2024)",
+       x = "Month",
+       y = "Number of Events",
+       fill = "Event Type") +
+  theme_minimal()
+```
+
+# Interpretation:
+
+Winter months—January, February, and December—are dominated by winter weather events, reflecting the prevalence of snow, ice, and freezing temperatures. Hail is most frequent in April and May, while Thunderstorm Wind surges in June through August. Floods and Flash Floods dominate September and October, and Drought emerges in November. These seasonal cycles highlight the importance of aligning preparedness strategies with predictable hazard patterns.
+
+
+
+# Question 4: Which event types cause the most fatalities?
+```{r}
+# Summarise fatalities by event type using joined_data
+fatality_summary <- joined_data %>%
+  filter(!is.na(FATALITY_ID)) %>%   # keep only rows with fatalities
+  group_by(EVENT_TYPE) %>%
+  summarise(total_fatalities = n(), .groups = "drop") %>%
+  arrange(desc(total_fatalities))
+
+# Top 10 deadliest event types
+top10_fatalities <- head(fatality_summary, 10)
+
+# Plot
+ggplot(top10_fatalities, aes(x = reorder(EVENT_TYPE, total_fatalities), y = total_fatalities)) +
+  geom_col(fill = "firebrick") +
+  coord_flip() +
+  labs(title = "Top 10 Deadliest Event Types (2024)",
+       x = "Event Type",
+       y = "Number of Fatalities")
+```
+
+# Interpretation:
+
+Flash Floods stand out as the deadliest hazard, underscoring the lethal nature of fast-moving water. Excessive Heat and Heat follow closely, reflecting climate-related health risks. Floods, Tornadoes, and Tropical Storms also rank high, while localized hazards such as Rip Currents, Cold/Wind Chill, and Debris Flow remind us that even less frequent events can have severe consequences. Fatal events are not always the most frequent, emphasizing the need for preparedness strategies that prioritize saving lives.
